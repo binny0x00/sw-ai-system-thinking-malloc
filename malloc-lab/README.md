@@ -50,3 +50,7 @@ To get a list of the driver flags:
 
 	unix> mdriver -h
 
+
+#### 요약
+- mm.c를 수정할 때마다 `make` 실행
+- 이후 `mdriver -V` 실행

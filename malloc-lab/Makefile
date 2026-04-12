@@ -1,5 +1,6 @@
 #
 # Students' Makefile for the Malloc Lab
+# "어떻게 컴파일할 것인가"를 정의하는 빌드 자동화 스크립트
 #
 TEAM = bovik
 VERSION = 1
