@@ -122,6 +122,58 @@ static inline void _put_ptr(void *p, void *ptr) {
 static char *seg_list[NUM_CLASSES];
 
 /* ================================================================
+ * 프로파일링 (make profile 로 빌드 시 활성화)
+ *
+ * 측정 항목:
+ *   bin_insert_count[i] : bin i에 삽입된 횟수
+ *   bin_length_sum[i]   : 삽입 시점의 bin i 리스트 길이 누적합
+ *
+ * → 평균 리스트 길이 = bin_length_sum / bin_insert_count
+ *   이 값이 클수록 정렬 삽입(O(n))의 비용이 높음.
+ *   반대로 크기 분산이 클수록 정렬의 util 개선 효과가 큼.
+ *   두 값을 비교해 임계 class를 데이터로 결정할 수 있음.
+ * ================================================================ */
+#ifdef PROFILE
+static size_t    bin_insert_count[NUM_CLASSES];
+static long long bin_length_sum[NUM_CLASSES];
+
+static void profile_print(void)
+{
+    fprintf(stderr, "\n[PROFILE] Bin 삽입 통계\n");
+    fprintf(stderr, "class | 크기 범위              | 삽입 횟수 | 평균 리스트 길이\n");
+    fprintf(stderr, "------+------------------------+-----------+----------------\n");
+
+    size_t lo = 1, hi = 8;
+    for (int i = 0; i < NUM_CLASSES; i++) {
+        double avg = (bin_insert_count[i] > 0)
+                     ? (double)bin_length_sum[i] / bin_insert_count[i]
+                     : 0.0;
+        if (i < NUM_CLASSES - 1)
+            fprintf(stderr, "  %2d  | %6zu ~ %6zu B        | %9zu  | %8.2f\n",
+                    i, lo, hi, bin_insert_count[i], avg);
+        else
+            fprintf(stderr, "  %2d  | %6zu B ~              | %9zu  | %8.2f\n",
+                    i, lo, bin_insert_count[i], avg);
+        lo = hi + 1;
+        hi <<= 1;
+    }
+    fprintf(stderr, "\n→ 평균 길이가 길수록 정렬 비용 높음, 크기 범위가 넓을수록 정렬 효과 높음\n\n");
+}
+
+static void profile_record(int class)
+{
+    int len = 0;
+    char *cur = seg_list[class];
+    while (cur != NULL) {
+        len++;
+        cur = GET_PTR(NEXT_PTR(cur));
+    }
+    bin_insert_count[class]++;
+    bin_length_sum[class] += len;
+}
+#endif
+
+/* ================================================================
  * 내부 함수 전방 선언
  * ================================================================ */
 
@@ -161,13 +213,24 @@ static int get_class(size_t size)
  *   소형 bin (class 0~6, ~512B): LIFO (맨 앞 삽입) → O(1), 속도 우선
  *   대형 bin (class 7~10, 513B~): 오름차순 정렬 삽입 → first-fit이 best-fit처럼 동작
  *
- * 대형 블록은 bin 내 블록 수가 적고, 크기 차이가 커서 정렬의 효과가 큼.
- * 소형 블록은 bin 내 크기 차이가 작아 정렬 효과가 미미하므로 속도를 유지.
+ * [임계 class 6/7의 근거 - 프로파일링 측정값]
+ *
+ *   class 1 (9~16B)  : 평균 리스트 길이 125 → 정렬 시 O(125) 비용,
+ *                      하지만 범위가 8B로 좁아 어떤 블록도 fit → 정렬 효과 0
+ *   class 2~6        : 평균 길이 1~3, 범위 좁음 → 정렬 효과 낮음, LIFO로 충분
+ *   class 7~9        : 평균 길이 0.3~1.6, 범위 512B+ → 정렬 비용 ≈ O(1), 효과 있음
+ *   class 10 (4097~) : 평균 길이 4.16, 범위 무한 → 정렬 없으면 과분할 심각
+ *
+ *   → class 7 이상부터 정렬하면 비용 대비 효과가 명확히 양수.
  */
 static void insert_free(void *bp)
 {
     int class = get_class(GET_SIZE(HDRP(bp)));
     size_t bp_size = GET_SIZE(HDRP(bp));
+
+#ifdef PROFILE
+    profile_record(class);  /* 삽입 전 현재 bin 길이 기록 */
+#endif
 
     if (class <= 6) {
         /* 소형 bin: LIFO */
@@ -412,6 +475,14 @@ static void *place(void *bp, size_t asize)
  */
 int mm_init(void)
 {
+#ifdef PROFILE
+    /* 이전 trace 통계 출력 후 초기화 */
+    if (bin_insert_count[0] + bin_insert_count[NUM_CLASSES - 1] > 0)
+        profile_print();
+    memset(bin_insert_count, 0, sizeof(bin_insert_count));
+    memset(bin_length_sum,   0, sizeof(bin_length_sum));
+#endif
+
     for (int i = 0; i < NUM_CLASSES; i++)
         seg_list[i] = NULL;
 
